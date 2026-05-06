@@ -6,6 +6,7 @@ using System;
 using System.Collections.Generic;
 using System.Drawing;
 using System.Windows.Forms;
+using static GMap.NET.Entity.OpenStreetMapGraphHopperRouteEntity;
 
 namespace V4_eliesDrons
 {
@@ -20,12 +21,32 @@ namespace V4_eliesDrons
         private int instruccionCounter = 0;
         private Instruccion instruccionSeleccionada = null;
 
-        private string rutaActualCargada = null;  // ← Guardar la ruta actual
+        private DroneAPIService droneAPIService;
+        private string vueloActualCargado = null;
 
+        
+
+        
         public Form1()
         {
             InitializeComponent();
             InicializarMapa();
+
+            this.Load += Form1_Load;
+        }
+
+        private void Form1_Load(object sender, EventArgs e)
+        {
+            try
+            {
+                droneAPIService = new DroneAPIService("http://dronseetac.upc.edu:8104/api");
+                MessageBox.Show("Conectado a Drone API ✓", "Conexión Exitosa");
+            }
+            catch (Exception ex)
+            {
+                MessageBox.Show($"Error conectando a API: {ex.Message}", "Error");
+                droneAPIService = null;
+            }
         }
 
 
@@ -242,7 +263,7 @@ namespace V4_eliesDrons
                 return;
             }
 
-            int idSeleccionado = instruccionSeleccionada.Id;
+            string idSeleccionado = instruccionSeleccionada.Id;  // ← CAMBIAR: string en lugar de int
 
             ComboBox cbFuncion = this.Controls.Find("cbFuncion", true).FirstOrDefault() as ComboBox;
             NumericUpDown nudAltitud = this.Controls.Find("nudAltitud", true).FirstOrDefault() as NumericUpDown;
@@ -255,7 +276,7 @@ namespace V4_eliesDrons
 
             if (nudAltitud != null)
             {
-                instruccionSeleccionada.Punto.Altitud = (float)nudAltitud.Value;  // Convertir a float
+                instruccionSeleccionada.Punto.Altitud = (float)nudAltitud.Value;
             }
 
             if (nudHeading != null)
@@ -268,7 +289,7 @@ namespace V4_eliesDrons
             ListBox listBox = this.Controls.Find("waypointListBox", true).FirstOrDefault() as ListBox;
             if (listBox != null)
             {
-                int nuevoIndice = instrucciones.FindIndex(i => i.Id == idSeleccionado);
+                int nuevoIndice = instrucciones.FindIndex(i => i.Id == idSeleccionado);  // ← Ahora compara string con string
                 if (nuevoIndice >= 0)
                 {
                     listBox.SelectedIndex = nuevoIndice;
@@ -421,7 +442,7 @@ namespace V4_eliesDrons
                 instrucciones.Clear();
                 instruccionSeleccionada = null;
                 instruccionCounter = 0;
-                rutaActualCargada = null;  // ← Limpiar ruta actual
+                vueloActualCargado = null;  // ← AGREGA ESTA LÍNEA
 
                 Instruccion.ReiniciarContador();
 
@@ -434,7 +455,7 @@ namespace V4_eliesDrons
             }
         }
 
-        private void BtnGuardarRuta_Click(object sender, EventArgs e)
+        private async void BtnGuardarRuta_Click(object sender, EventArgs e)
         {
             if (instrucciones.Count == 0)
             {
@@ -442,42 +463,58 @@ namespace V4_eliesDrons
                 return;
             }
 
-            Vuelo vuelo = new Vuelo();
-            vuelo.Instrucciones = new List<Instruccion>(instrucciones);
+            if (droneAPIService == null)
+            {
+                MessageBox.Show("No hay conexión a la API", "Error");
+                return;
+            }
 
-            string previewGuardado = GenerarPreviewGuardado(vuelo);
+            // ← NUEVO: Pedir el nombre del vuelo
+            NombVueloForm formNombre = new NombVueloForm();
+            DialogResult resultadoNombre = formNombre.ShowDialog();
 
-            // Usar la forma personalizada
+            if (resultadoNombre != DialogResult.OK)
+            {
+                return;  // Si cancela, no hacer nada
+            }
+
+            string nametag = formNombre.ObtenerNombre();
+
+            if (string.IsNullOrWhiteSpace(nametag))
+            {
+                MessageBox.Show("El nombre del vuelo no puede estar vacío", "Error");
+                return;
+            }
+
+            // Mostrar preview
+            Vuelo vueloTemporal = new Vuelo();
+            vueloTemporal.NameTag = nametag;
+            vueloTemporal.Instrucciones = new List<Instruccion>(instrucciones);
+
+            string previewGuardado = GenerarPreviewGuardado(vueloTemporal);
+
             PreviewForm previewForm = new PreviewForm(previewGuardado);
             DialogResult resultado = previewForm.ShowDialog();
 
             if (resultado == DialogResult.Yes)
             {
-                SaveFileDialog sfd = new SaveFileDialog
+                try
                 {
-                    Filter = "Archivos JSON (*.json)|*.json|Todos los archivos (*.*)|*.*",
-                    DefaultExt = "json",
-                    FileName = $"ruta_{DateTime.Now:yyyy-MM-dd_HH-mm-ss}.json"
-                };
+                    Vuelo vuelo = new Vuelo();
+                    vuelo.NameTag = nametag;
+                    vuelo.Instrucciones = new List<Instruccion>(instrucciones);
 
-                if (sfd.ShowDialog() == DialogResult.OK)
+                    await droneAPIService.GuardarRutaAsync(vuelo);
+                    vueloActualCargado = vuelo.ID;
+
+                    MessageBox.Show(
+                        $"Ruta guardada en la API\nNombre: {vuelo.NameTag}\nID: {vuelo.ID}",
+                        "Éxito"
+                    );
+                }
+                catch (Exception ex)
                 {
-                    try
-                    {
-                        VueloService.GuardarRuta(vuelo, sfd.FileName);
-                        rutaActualCargada = sfd.FileName;  // ← Guardar ruta actual
-
-                        MessageBox.Show(
-                            $"Ruta guardada correctamente en:\n{sfd.FileName}",
-                            "Éxito",
-                            MessageBoxButtons.OK,
-                            MessageBoxIcon.Information
-                        );
-                    }
-                    catch (Exception ex)
-                    {
-                        MessageBox.Show($"Error: {ex.Message}", "Error al guardar");
-                    }
+                    MessageBox.Show($"Error: {ex.Message}", "Error al guardar");
                 }
             }
         }
@@ -569,45 +606,108 @@ namespace V4_eliesDrons
                 lblLongitud.Text = "Lon: --";
             }
         }
-        private void BtnCargarRuta_Click(object sender, EventArgs e)
+        private async void BtnCargarRuta_Click(object sender, EventArgs e)
         {
-            OpenFileDialog ofd = new OpenFileDialog
+            if (droneAPIService == null)
             {
-                Filter = "Archivos JSON (*.json)|*.json|Todos los archivos (*.*)|*.*",
-                DefaultExt = "json"
-            };
+                MessageBox.Show("No hay conexión a la API", "Error");
+                return;
+            }
 
-            if (ofd.ShowDialog() == DialogResult.OK)
+            try
             {
-                try
+                var vuelos = await droneAPIService.ObtenerTodosVuelosAsync();
+
+                if (vuelos.Count == 0)
                 {
-                    Instruccion.ReiniciarContador();
-
-                    Vuelo vuelo = VueloService.CargarRuta(ofd.FileName);
-
-                    instrucciones.Clear();
-                    instruccionSeleccionada = null;
-                    instruccionCounter = 0;
-
-                    instrucciones = new List<Instruccion>(vuelo.Instrucciones);
-                    rutaActualCargada = ofd.FileName;  // ← Guardar ruta actual
-
-                    ActualizarListaInstrucciones();
-                    ActualizarRuta();
-                    RefrescarMarcadores();
-
-                    MessageBox.Show(
-                        $"Ruta cargada correctamente\n{vuelo.Instrucciones.Count} instrucciones importadas",
-                        "Éxito"
-                    );
+                    MessageBox.Show("No hay rutas guardadas", "Aviso");
+                    return;
                 }
-                catch (Exception ex)
-                {
-                    MessageBox.Show($"Error: {ex.Message}", "Error al cargar");
-                }
+
+                var vueloSeleccionado = SeleccionarVuelo(vuelos);
+                if (vueloSeleccionado == null) return;
+
+                Instruccion.ReiniciarContador();
+                var vueloCompleto = await droneAPIService.CargarRutaAsync(vueloSeleccionado.ID);
+
+                instrucciones.Clear();
+                instruccionSeleccionada = null;
+                instruccionCounter = 0;
+
+                instrucciones = new List<Instruccion>(vueloCompleto.Instrucciones);
+                vueloActualCargado = vueloSeleccionado.ID;
+
+                ActualizarListaInstrucciones();
+                ActualizarRuta();
+                RefrescarMarcadores();
+
+                MessageBox.Show(
+                    $"Ruta cargada correctamente\n{vueloCompleto.Instrucciones.Count} instrucciones importadas",
+                    "Éxito"
+                );
+            }
+            catch (Exception ex)
+            {
+                MessageBox.Show($"Error: {ex.Message}", "Error al cargar");
             }
         }
-        private void BtnActualizarRuta_Click(object sender, EventArgs e)
+
+        private Vuelo SeleccionarVuelo(List<Vuelo> vuelos)
+        {
+            using (Form form = new Form())
+            {
+                form.Text = "Seleccionar Ruta";
+                form.Width = 500;
+                form.Height = 350;
+                form.StartPosition = FormStartPosition.CenterParent;
+
+                ListBox listBox = new ListBox
+                {
+                    Dock = DockStyle.Fill,
+                    DataSource = vuelos,
+                    DisplayMember = "NameTag"
+                };
+
+                Button btnOK = new Button
+                {
+                    Text = "Aceptar",
+                    Dock = DockStyle.Bottom,
+                    Height = 30,
+                    BackColor = System.Drawing.Color.Green,
+                    ForeColor = System.Drawing.Color.White
+                };
+
+                Button btnCancel = new Button
+                {
+                    Text = "Cancelar",
+                    Dock = DockStyle.Bottom,
+                    Height = 30,
+                    BackColor = System.Drawing.Color.Red,
+                    ForeColor = System.Drawing.Color.White
+                };
+
+                btnOK.Click += (s, e) =>
+                {
+                    var vueloSeleccionado = (Vuelo)listBox.SelectedItem;
+                    // ← MOSTRAR EL ID SELECCIONADO
+                    MessageBox.Show($"Vuelo seleccionado:\nNombre: {vueloSeleccionado.NameTag}\nID: {vueloSeleccionado.ID}", "Debug");
+                    form.DialogResult = DialogResult.OK;
+                };
+
+                btnCancel.Click += (s, e) => form.DialogResult = DialogResult.Cancel;
+
+                form.Controls.Add(listBox);
+                form.Controls.Add(btnOK);
+                form.Controls.Add(btnCancel);
+
+                if (form.ShowDialog() == DialogResult.OK)
+                {
+                    return (Vuelo)listBox.SelectedItem;
+                }
+                return null;
+            }
+        }
+        private async void BtnActualizarRuta_Click(object sender, EventArgs e)
         {
             if (instrucciones.Count == 0)
             {
@@ -615,14 +715,20 @@ namespace V4_eliesDrons
                 return;
             }
 
-            if (rutaActualCargada == null)
+            if (vueloActualCargado == null)
             {
                 MessageBox.Show("No hay una ruta cargada. Use 'Guardar Ruta' primero.", "Aviso");
                 return;
             }
 
+            if (droneAPIService == null)
+            {
+                MessageBox.Show("No hay conexión a la API", "Error");
+                return;
+            }
+
             DialogResult resultado = MessageBox.Show(
-                $"¿Deseas actualizar la ruta en:\n{rutaActualCargada}?",
+                $"¿Deseas actualizar la ruta?\nID: {vueloActualCargado}",
                 "Actualizar Ruta",
                 MessageBoxButtons.YesNo,
                 MessageBoxIcon.Question
@@ -633,16 +739,12 @@ namespace V4_eliesDrons
                 try
                 {
                     Vuelo vuelo = new Vuelo();
+                    vuelo.ID = vueloActualCargado;
                     vuelo.Instrucciones = new List<Instruccion>(instrucciones);
 
-                    VueloService.GuardarRuta(vuelo, rutaActualCargada);
+                    await droneAPIService.ActualizarRutaAsync(vueloActualCargado, vuelo);
 
-                    MessageBox.Show(
-                        "Ruta actualizada correctamente",
-                        "Éxito",
-                        MessageBoxButtons.OK,
-                        MessageBoxIcon.Information
-                    );
+                    MessageBox.Show("Ruta actualizada correctamente", "Éxito");
                 }
                 catch (Exception ex)
                 {
